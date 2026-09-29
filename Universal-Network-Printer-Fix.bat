@@ -554,6 +554,8 @@ reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Lsa" /v restrictano
 reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Lsa" /v restrictanonymoussam /t REG_DWORD /d 0 /f >nul 2>&1
 reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" /v restrictnullsessaccess /t REG_DWORD /d 0 /f >nul 2>&1
 reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" /v NullSessionPipes /t REG_MULTI_SZ /d "spoolss\0netlogon\0lsarpc\0samr\0browser" /f >nul 2>&1
+:: Ensure Guest is not denied network logon in Local Security Policy
+call :FIX_USER_RIGHTS
 
 :: Client-Side Guest and SMB Configuration
 reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f >nul 2>&1
@@ -599,4 +601,41 @@ net stop FDResPub >nul 2>&1
 net start FDResPub >nul 2>&1
 net stop lmhosts >nul 2>&1
 net start lmhosts >nul 2>&1
+exit /b 0
+
+
+:FIX_USER_RIGHTS
+echo [*] Adjusting User Rights Assignment (Fixes 'Logon failure: user not granted requested logon type')...
+powershell -NoProfile -Command "& {
+    $secFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'secpol.cfg');
+    $sdbFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'secpol.sdb');
+    secedit /export /cfg $secFile /areas USER_RIGHTS >$null 2>&1;
+    if (Test-Path $secFile) {
+        $lines = Get-Content $secFile;
+        $out = @();
+        foreach ($line in $lines) {
+            if ($line -match '^SeDenyNetworkLogonRight\s*=\s*(.*)') {
+                $val = $matches[1];
+                $items = $val.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne 'Guest' -and $_ -ne '*S-1-5-32-546' -and $_ -notmatch '501$' -and $_ -ne '' };
+                $newVal = if ($items) { $items -join ',' } else { '' };
+                $out += ('SeDenyNetworkLogonRight = ' + $newVal);
+            }
+            elseif ($line -match '^SeNetworkLogonRight\s*=\s*(.*)') {
+                $val = $matches[1];
+                $items = $val.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' };
+                if ($items -notcontains '*S-1-1-0') { $items += '*S-1-1-0' };
+                if ($items -notcontains '*S-1-5-32-546') { $items += '*S-1-5-32-546' };
+                if ($items -notcontains '*S-1-5-11') { $items += '*S-1-5-11' };
+                $newVal = $items -join ',';
+                $out += ('SeNetworkLogonRight = ' + $newVal);
+            }
+            else {
+                $out += $line;
+            }
+        }
+        Set-Content -Path $secFile -Value $out;
+        secedit /configure /db $sdbFile /cfg $secFile /areas USER_RIGHTS >$null 2>&1;
+        Remove-Item $secFile, $sdbFile -Force -ErrorAction SilentlyContinue;
+    }
+}" >nul 2>&1
 exit /b 0
