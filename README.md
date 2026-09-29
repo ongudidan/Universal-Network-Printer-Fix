@@ -123,7 +123,92 @@ When prompted for **Network Credentials** on another computer:
 
 ---
 
-## 🔍 How to Troubleshoot Common Scenarios
+## 📖 Manual Configuration Guide (Without the Script)
+
+If you prefer to configure these settings manually or want to understand what commands are being executed under the hood:
+
+### 1. Turn ON the `Guest` Account with a Blank Password
+Open **Command Prompt as Administrator** and run:
+```cmd
+:: 1. Enable the built-in Guest account
+net user Guest /active:yes
+
+:: 2. Set the password to blank (empty)
+net user Guest ""
+
+:: 3. Ensure the password never expires and is not required
+net user Guest /passwordreq:no /expires:never
+
+:: 4. Allow blank passwords over the local network (CRITICAL!)
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 0 /f
+
+:: 5. Keep Guest hidden from the physical Windows boot/login screen
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" /v Guest /t REG_DWORD /d 0 /f
+
+:: 6. Restart the sharing service
+net stop LanmanServer /y && net start LanmanServer
+```
+
+---
+
+### 2. Manually Turn Password-Protected Sharing OFF (Guest Mode)
+```cmd
+:: Force incoming connections to authenticate automatically as Guest
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v ForceGuest /t REG_DWORD /d 1 /f
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 0 /f
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 1 /f
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v restrictanonymous /t REG_DWORD /d 0 /f
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" /v restrictnullsessaccess /t REG_DWORD /d 0 /f
+
+:: Client-side: Allow connection to insecure guest shares
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f
+powershell -NoProfile -Command "Set-SmbClientConfiguration -EnableInsecureGuestLogons $true -Force"
+```
+
+---
+
+### 3. Manually Turn Password-Protected Sharing ON (Classic Mode)
+```cmd
+:: Force incoming connections to authenticate with their own Windows credentials
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v ForceGuest /t REG_DWORD /d 0 /f
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 1 /f
+net user Guest /active:no
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters" /v AllowInsecureGuestAuth /t REG_DWORD /d 0 /f
+```
+
+---
+
+### 4. Manually Fix RPC Print Errors (`0x0000011b` & `0x00000709`)
+```cmd
+:: Enable RPC over Named Pipes (Fixes 0x00000709 on Windows 11)
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC" /v RpcUseNamedPipeProtocol /t REG_DWORD /d 1 /f
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC" /v RpcProtocols /t REG_DWORD /d 7 /f
+
+:: Disable strict RPC Authentication Level Privacy (Fixes 0x0000011b)
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Print" /v RpcAuthnLevelPrivacyEnabled /t REG_DWORD /d 0 /f
+
+:: Allow non-administrators to install Point-and-Print drivers
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint" /v RestrictDriverInstallationToAdministrators /t REG_DWORD /d 0 /f
+```
+
+---
+
+### 5. Manually Fix Network Discovery in File Explorer
+```cmd
+:: Set discovery services to Automatic and start them
+sc config FDResPub start= auto && net start FDResPub
+sc config lmhosts start= auto && net start lmhosts
+sc config SSDPSRV start= auto && net start SSDPSRV
+sc config upnphost start= auto && net start upnphost
+
+:: Enable discovery and sharing firewall rules
+netsh advfirewall firewall set rule group="File and Printer Sharing" new enable=Yes
+netsh advfirewall firewall set rule group="Network Discovery" new enable=Yes
+```
+
+---
+
+## 🔍 Troubleshooting Matrix
 
 | Issue / Symptom | Recommended Action |
 | :--- | :--- |
