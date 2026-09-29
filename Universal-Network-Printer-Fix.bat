@@ -436,6 +436,7 @@ call :FIX_PROFILE
 call :FIX_DISCOVERY_SERVICES
 call :FIX_NETBIOS
 call :FIX_FIREWALL
+call :FIX_USER_RIGHTS
 call :FIX_RPC_POLICIES
 call :FIX_SPOOLER_PERMISSIONS
 exit /b 0
@@ -605,37 +606,21 @@ exit /b 0
 
 
 :FIX_USER_RIGHTS
-echo [*] Adjusting User Rights Assignment (Fixes 'Logon failure: user not granted requested logon type')...
-powershell -NoProfile -Command "& {
-    $secFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'secpol.cfg');
-    $sdbFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'secpol.sdb');
-    secedit /export /cfg $secFile /areas USER_RIGHTS >$null 2>&1;
-    if (Test-Path $secFile) {
-        $lines = Get-Content $secFile;
-        $out = @();
-        foreach ($line in $lines) {
-            if ($line -match '^SeDenyNetworkLogonRight\s*=\s*(.*)') {
-                $val = $matches[1];
-                $items = $val.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne 'Guest' -and $_ -ne '*S-1-5-32-546' -and $_ -notmatch '501$' -and $_ -ne '' };
-                $newVal = if ($items) { $items -join ',' } else { '' };
-                $out += ('SeDenyNetworkLogonRight = ' + $newVal);
-            }
-            elseif ($line -match '^SeNetworkLogonRight\s*=\s*(.*)') {
-                $val = $matches[1];
-                $items = $val.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' };
-                if ($items -notcontains '*S-1-1-0') { $items += '*S-1-1-0' };
-                if ($items -notcontains '*S-1-5-32-546') { $items += '*S-1-5-32-546' };
-                if ($items -notcontains '*S-1-5-11') { $items += '*S-1-5-11' };
-                $newVal = $items -join ',';
-                $out += ('SeNetworkLogonRight = ' + $newVal);
-            }
-            else {
-                $out += $line;
-            }
-        }
-        Set-Content -Path $secFile -Value $out;
-        secedit /configure /db $sdbFile /cfg $secFile /areas USER_RIGHTS >$null 2>&1;
-        Remove-Item $secFile, $sdbFile -Force -ErrorAction SilentlyContinue;
-    }
-}" >nul 2>&1
+echo [*] Adjusting User Rights Assignment (Removing network logon denial for Guest)...
+set "SECINF=%TEMP%\grant_network_rights_%RANDOM%.inf"
+set "SECSDB=%TEMP%\grant_network_rights_%RANDOM%.sdb"
+(
+echo [Unicode]
+echo Unicode=yes
+echo [Version]
+echo signature="$CHICAGO$"
+echo Revision=1
+echo [Privilege Rights]
+echo SeNetworkLogonRight = *S-1-1-0,*S-1-5-32-544,*S-1-5-32-545,*S-1-5-32-546,*S-1-5-11
+echo SeDenyNetworkLogonRight = 
+) > "%SECINF%"
+secedit /configure /db "%SECSDB%" /cfg "%SECINF%" /areas USER_RIGHTS >nul 2>&1
+del "%SECINF%" >nul 2>&1
+del "%SECSDB%" >nul 2>&1
+gpupdate /force >nul 2>&1
 exit /b 0
