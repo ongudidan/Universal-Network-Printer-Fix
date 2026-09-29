@@ -8,6 +8,7 @@ An all-in-one automation and repair utility for Windows 10, Windows 11, and Wind
 
 * **Error `0x0000011b`**: Fixes RPC authentication-level privacy mismatch caused by Windows security updates.
 * **Error `0x00000709`**: Restores RPC over Named Pipes communication required on Windows 11 22H2+.
+* **Error 1385 (`Logon failure: the user has not been granted the requested logon type at this computer`)**: Automatically unblocks `Guest` from the Local Security Policy network denial list (`SeDenyNetworkLogonRight`) and grants network access permissions to `Everyone` and `Guests`.
 * **"Enter network credentials" Loop**: Resolves persistent password prompt loops caused by disabled `Guest` accounts, blank password network blocks (`LimitBlankPasswordUse`), and client-side insecure guest logon restrictions.
 * **Hidden from Network Folder**: Fixes PCs not appearing in File Explorer's **Network** folder by configuring WS-Discovery (`FDResPub`), forcing NetBIOS over TCP/IP, and opening inbound discovery firewall ports.
 * **Windows 11 Microsoft Account & PIN Confusion**: Provides clear credentials guidance for machines set up with Microsoft Accounts and reminds users why Windows Hello PINs do not work over SMB network sharing.
@@ -73,6 +74,7 @@ An all-in-one automation and repair utility for Windows 10, Windows 11, and Wind
 * The script automatically:
   - Sets network profile to **Private**.
   - Activates the built-in `Guest` account with a blank password.
+  - Removes `Guest` from the network logon denial list (`SeDenyNetworkLogonRight`).
   - Removes the "Blank Password over Network" block (`LimitBlankPasswordUse = 0`).
   - Hides the `Guest` account from the physical Windows boot/login screen.
   - Fixes client-side insecure guest restrictions (`AllowInsecureGuestAuth = 1`).
@@ -151,14 +153,50 @@ net stop LanmanServer /y && net start LanmanServer
 
 ---
 
-### 2. Manually Turn Password-Protected Sharing OFF (Guest Mode)
+### 2. Fix "Logon failure: the user has not been granted the requested logon type at this computer" (Error 1385)
+
+#### Method A: Using `secpol.msc` (Windows GUI)
+1. On the host computer, press <kbd>Win</kbd> + <kbd>R</kbd>, type **`secpol.msc`**, and press **Enter**.
+2. Navigate to: **Local Policies** > **User Rights Assignment**.
+3. In the right pane:
+   * Double-click **"Deny access to this computer from the network"** -> Select **`Guest`** (or `Guests`) -> Click **Remove** -> Click **OK**.
+   * Double-click **"Access this computer from the network"** -> Ensure **`Everyone`** and **`Guests`** are in the list. Click **Add User or Group...** if missing -> Click **OK**.
+4. Open Command Prompt as Administrator and run:
+   ```cmd
+   gpupdate /force
+   ```
+
+#### Method B: Using Command Prompt / Security Template (Native)
+Run in Command Prompt as Administrator:
+```cmd
+(
+echo [Unicode]
+echo Unicode=yes
+echo [Version]
+echo signature="$CHICAGO$"
+echo Revision=1
+echo [Privilege Rights]
+echo SeNetworkLogonRight = *S-1-1-0,*S-1-5-32-544,*S-1-5-32-545,*S-1-5-32-546,*S-1-5-11
+echo SeDenyNetworkLogonRight = 
+) > "%TEMP%\grant_rights.inf"
+
+secedit /configure /db "%TEMP%\grant_rights.sdb" /cfg "%TEMP%\grant_rights.inf" /areas USER_RIGHTS
+del "%TEMP%\grant_rights.inf" && del "%TEMP%\grant_rights.sdb"
+gpupdate /force
+```
+
+---
+
+### 3. Manually Turn Password-Protected Sharing OFF (Guest Mode)
 ```cmd
 :: Force incoming connections to authenticate automatically as Guest
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v ForceGuest /t REG_DWORD /d 1 /f
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v LimitBlankPasswordUse /t REG_DWORD /d 0 /f
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v everyoneincludesanonymous /t REG_DWORD /d 1 /f
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v restrictanonymous /t REG_DWORD /d 0 /f
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v restrictanonymoussam /t REG_DWORD /d 0 /f
 reg add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" /v restrictnullsessaccess /t REG_DWORD /d 0 /f
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" /v NullSessionPipes /t REG_MULTI_SZ /d "spoolss\0netlogon\0lsarpc\0samr\0browser" /f
 
 :: Client-side: Allow connection to insecure guest shares
 reg add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f
@@ -167,7 +205,7 @@ powershell -NoProfile -Command "Set-SmbClientConfiguration -EnableInsecureGuestL
 
 ---
 
-### 3. Manually Turn Password-Protected Sharing ON (Classic Mode)
+### 4. Manually Turn Password-Protected Sharing ON (Classic Mode)
 ```cmd
 :: Force incoming connections to authenticate with their own Windows credentials
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v ForceGuest /t REG_DWORD /d 0 /f
@@ -178,7 +216,7 @@ reg add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters" /v
 
 ---
 
-### 4. Manually Fix RPC Print Errors (`0x0000011b` & `0x00000709`)
+### 5. Manually Fix RPC Print Errors (`0x0000011b` & `0x00000709`)
 ```cmd
 :: Enable RPC over Named Pipes (Fixes 0x00000709 on Windows 11)
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Printers\RPC" /v RpcUseNamedPipeProtocol /t REG_DWORD /d 1 /f
@@ -193,7 +231,7 @@ reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint" /v 
 
 ---
 
-### 5. Manually Fix Network Discovery in File Explorer
+### 6. Manually Fix Network Discovery in File Explorer
 ```cmd
 :: Set discovery services to Automatic and start them
 sc config FDResPub start= auto && net start FDResPub
@@ -212,6 +250,7 @@ netsh advfirewall firewall set rule group="Network Discovery" new enable=Yes
 
 | Issue / Symptom | Recommended Action |
 | :--- | :--- |
+| **Logon failure: the user has not been granted the requested logon type (Error 1385)** | Run Option `[1]` on the host PC (or use `secpol.msc` to remove `Guest` from *Deny access to this computer from the network*). |
 | **PC not showing in "Network" folder on other computers** | 1. Run Option `[4]` on both the host and client PC.<br>2. Or use Option `[5]` to bypass the Network folder completely. |
 | **Turned off password sharing manually, but still asked for password** | Run Option `[1]`. Windows leaves the `Guest` account disabled and blank passwords blocked by default; Option `[1]` unlocks both. |
 | **Getting stuck in a password prompt loop with cached bad credentials** | Run Option `[6]` on the client PC to flush stale SMB sessions and NetBIOS cache. |
